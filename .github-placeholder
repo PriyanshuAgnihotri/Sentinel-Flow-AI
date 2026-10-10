@@ -1,0 +1,1 @@
+GitHub Actions CI should be added before public release: lint (ruff), unit tests (pytest), dependency audit, and Docker build.

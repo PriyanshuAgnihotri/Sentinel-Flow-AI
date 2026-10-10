@@ -1,0 +1,22 @@
+[project]
+name = "sentinel-flow"
+version = "0.1.0"
+description = "Policy-controlled, observable multi-agent customer-support workflow orchestrator"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "pydantic-settings>=2.5,<3",
+  "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "redis>=5,<6",
+  "langgraph>=0.2,<1", "langchain-core>=0.3,<1", "openai>=1.50,<3",
+  "langfuse>=2.50,<4", "tenacity>=9,<10", "numpy>=1.26,<3"
+]
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "httpx>=0.27,<1", "ruff>=0.7,<1"]
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["frontend*", "tests*"]
