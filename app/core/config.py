@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     app_name: str = "SentinelFlow"
@@ -16,8 +17,10 @@ class Settings(BaseSettings):
     semantic_cache_threshold: float = 0.88
     semantic_cache_ttl_seconds: int = 3600
     max_graph_steps: int = 8
+
     @property
     def cors_origins(self) -> list[str]:
         return [x.strip() for x in self.frontend_origins.split(",") if x.strip()]
+
 
 settings = Settings()
