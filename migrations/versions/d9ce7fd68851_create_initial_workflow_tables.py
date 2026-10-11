@@ -1,7 +1,7 @@
 """create initial workflow tables
 
 Revision ID: d9ce7fd68851
-Revises: 
+Revises:
 Create Date: 2026-10-11 07:46:05.298177
 
 """
