@@ -1,5 +1,8 @@
-import json, hashlib
+import hashlib
+import json
+
 from redis.asyncio import Redis
+
 from app.core.config import settings
 
 

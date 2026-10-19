@@ -22,3 +22,7 @@ target-version = "py311"
 [tool.setuptools.packages.find]
 include = ["app*"]
 exclude = ["frontend*", "tests*"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/*.py" = ["I001", "UP035", "UP007"]
+"migrations/versions/*.py" = ["I001", "UP035", "UP007"]

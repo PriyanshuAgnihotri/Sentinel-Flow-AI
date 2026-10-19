@@ -1,6 +1,7 @@
 import pytest
-from app.core.guardrails import inspect_input, validate_sql
+
 from app.agents.graph import workflow_graph
+from app.core.guardrails import inspect_input, validate_sql
 
 
 @pytest.mark.parametrize(

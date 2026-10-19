@@ -1,9 +1,10 @@
-from typing import TypedDict, Any
-from uuid import uuid4
-from langgraph.graph import StateGraph, END
+from typing import Any, TypedDict
+
+from langgraph.graph import END, StateGraph
+
 from app.core.guardrails import inspect_input
 from app.schemas.workflow import Intent, Risk
-from app.tools.mock_tools import get_order_status, create_support_ticket
+from app.tools.mock_tools import get_order_status
 
 
 class FlowState(TypedDict, total=False):
@@ -69,7 +70,7 @@ def worker(s: FlowState) -> FlowState:
     if intent == Intent.ORDER_STATUS:
         import re
 
-        match = re.search(r"(?:#\d+|ORD-[A-Z0-9]+)", s["message"], re.I)
+        match = re.search(r"(?:#\d+|ORD-[A-Z0-9]+)", s["message"], re.IGNORECASE)
         if not match:
             return {
                 "answer": "What is your order ID? I need it to check the shipment status.",
