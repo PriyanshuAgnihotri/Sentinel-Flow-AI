@@ -34,6 +34,7 @@ class WorkflowResponse(BaseModel):
     trace_id: str
     request_id: str
     cache_hit: bool = False
+    approval_id: str | None = None
 
 
 class ApprovalDecision(BaseModel):
