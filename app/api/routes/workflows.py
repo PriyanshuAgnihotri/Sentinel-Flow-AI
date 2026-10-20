@@ -13,6 +13,7 @@ from app.services.approval_service import (
     ApprovalService,
 )
 from app.services.orchestrator import ApprovalPersistenceError, Orchestrator
+from app.services.workflow_run_service import WorkflowRunPersistenceError
 
 router = APIRouter()
 session_dependency = Depends(get_session)
@@ -31,6 +32,7 @@ async def chat(
             body.message,
             body.user_id,
             session=session,
+            conversation_id=body.conversation_id,
         )
     except ApprovalPersistenceError:
         raise HTTPException(
@@ -38,6 +40,14 @@ async def chat(
             detail=(
                 "The required approval could not be saved. "
                 "No refund was issued; please retry later."
+            ),
+        ) from None
+    except WorkflowRunPersistenceError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The workflow result could not be saved. "
+                "Please retry later."
             ),
         ) from None
 

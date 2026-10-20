@@ -1,5 +1,5 @@
-
 import logging
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,9 +9,22 @@ from app.schemas.workflow import Intent
 from app.services.approval_service import ApprovalService
 from app.services.cache import SemanticCache
 from app.services.observability import observe, trace_ids
+from app.services.workflow_run_service import (
+    WorkflowRunPersistenceError,
+    WorkflowRunService,
+)
 
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def _transaction(session: AsyncSession):
+    """Coordinate operations within one transaction."""
+    if session.in_transaction():
+        async with session.begin_nested():
+            yield
+    else:
+        async with session.begin():
+            yield
 
 class ApprovalPersistenceError(Exception):
     """Raised when a required approval cannot be persisted."""
@@ -26,6 +39,7 @@ class Orchestrator:
         message: str,
         user_id: str,
         session: AsyncSession,
+        conversation_id: str | None = None,
     ) -> dict:
         request_id, trace_id = trace_ids()
         span = observe(
@@ -35,7 +49,6 @@ class Orchestrator:
         )
 
         try:
-            # Run deterministic guardrails before any cache lookup.
             guardrail_result = inspect_input(message)
 
             if not guardrail_result.allowed:
@@ -54,10 +67,18 @@ class Orchestrator:
                     trace_id=trace_id,
                     cache_hit=False,
                 )
+                await self._persist_run(
+                    session,
+                    request_id=request_id,
+                    user_id=user_id,
+                    message=message,
+                    result=result,
+                    conversation_id=conversation_id,
+                )
                 self._finish_span(span, state, result)
                 return result
 
-            # Only exact requests within the user scope can be cache hits.
+            # Exact-match cache lookup is scoped to the requesting user.
             if self.cache:
                 hit = await self.cache.lookup(message, user_id)
                 if hit:
@@ -68,6 +89,15 @@ class Orchestrator:
                             "cache_hit": True,
                         }
                     )
+                    await self._persist_run(
+                        session,
+                        request_id=request_id,
+                        user_id=user_id,
+                        message=message,
+                        result=hit,
+                        conversation_id=conversation_id,
+                    )
+                    self._finish_cached_span(span, hit)
                     return hit
 
             state = workflow_graph.invoke(
@@ -87,35 +117,44 @@ class Orchestrator:
                 cache_hit=False,
             )
 
-            # Persist a review request for refund-related escalations.
-            # This creates a review record only; it never issues a refund.
-            if (
-                state.get("intent") == Intent.REFUND.value
-                and result["escalation_required"]
-                and not result["blocked_actions"]
-            ):
-                try:
-                    approval = await ApprovalService.create(
-                        session,
-                        request_id=request_id,
-                        user_id=user_id,
-                        action={
-                            "type": "refund_review",
-                            "message": message,
-                            "requires_identity_verification": True,
-                            "execution_enabled": False,
-                        },
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Unable to persist required refund approval",
-                        extra={"request_id": request_id},
-                    )
-                    raise ApprovalPersistenceError(
-                        "Unable to create the required refund approval"
-                    ) from exc
+                        # Save the approval and workflow run atomically.
+            async with _transaction(session):
+                if (
+                    state.get("intent") == Intent.REFUND.value
+                    and result["escalation_required"]
+                    and not result["blocked_actions"]
+                ):
+                    try:
+                        approval = await ApprovalService.create(
+                            session,
+                            request_id=request_id,
+                            user_id=user_id,
+                            action={
+                                "type": "refund_review",
+                                "message": message,
+                                "requires_identity_verification": True,
+                                "execution_enabled": False,
+                            },
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            "Unable to persist required refund approval",
+                            extra={"request_id": request_id},
+                        )
+                        raise ApprovalPersistenceError(
+                            "Unable to create the required refund approval"
+                        ) from exc
 
-                result["approval_id"] = approval.id
+                    result["approval_id"] = approval.id
+
+                await self._persist_run(
+                    session,
+                    request_id=request_id,
+                    user_id=user_id,
+                    message=message,
+                    result=result,
+                    conversation_id=conversation_id,
+                )
 
             if self.cache:
                 await self.cache.store(message, user_id, result)
@@ -123,33 +162,17 @@ class Orchestrator:
             self._finish_span(span, state, result)
             return result
 
-        except ApprovalPersistenceError:
-            if span:
-                try:
-                    span.update(level="ERROR")
-                    span.end()
-                except Exception:
-                    logger.warning(
-                        "Unable to finalize failed workflow span",
-                        exc_info=True,
-                    )
+        except (ApprovalPersistenceError, WorkflowRunPersistenceError):
+            self._end_error_span(span)
             raise
 
         except Exception:
             logger.exception(
-                "Workflow execution failed; returning safe fallback"
+                "Workflow execution failed; returning safe fallback",
+                extra={"request_id": request_id},
             )
-            if span:
-                try:
-                    span.update(level="ERROR")
-                    span.end()
-                except Exception:
-                    logger.warning(
-                        "Unable to finalize failed workflow span",
-                        exc_info=True,
-                    )
 
-            return {
+            fallback = {
                 "answer": (
                     "The workflow encountered a temporary error. "
                     "No sensitive action was performed; please retry "
@@ -164,6 +187,40 @@ class Orchestrator:
                 "request_id": request_id,
                 "cache_hit": False,
             }
+
+            # Do not silently report success if recording the run fails.
+            await self._persist_run(
+                session,
+                request_id=request_id,
+                user_id=user_id,
+                message=message,
+                result=fallback,
+                conversation_id=conversation_id,
+                status="failed",
+            )
+            self._end_error_span(span)
+            return fallback
+
+    @staticmethod
+    async def _persist_run(
+        session: AsyncSession,
+        *,
+        request_id: str,
+        user_id: str,
+        message: str,
+        result: dict,
+        conversation_id: str | None,
+        status: str | None = None,
+    ) -> None:
+        await WorkflowRunService.record(
+            session,
+            request_id=request_id,
+            user_id=user_id,
+            message=message,
+            result=result,
+            conversation_id=conversation_id,
+            status=status,
+        )
 
     @staticmethod
     def _build_result(
@@ -206,5 +263,37 @@ class Orchestrator:
             except Exception:
                 logger.warning(
                     "Unable to finalize workflow telemetry span",
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _finish_cached_span(span, result: dict) -> None:
+        if span:
+            try:
+                span.update(
+                    output={
+                        "cache_hit": True,
+                        "confidence": result["confidence"],
+                        "escalation_required": result[
+                            "escalation_required"
+                        ],
+                    }
+                )
+                span.end()
+            except Exception:
+                logger.warning(
+                    "Unable to finalize cached workflow span",
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _end_error_span(span) -> None:
+        if span:
+            try:
+                span.update(level="ERROR")
+                span.end()
+            except Exception:
+                logger.warning(
+                    "Unable to finalize failed workflow span",
                     exc_info=True,
                 )
