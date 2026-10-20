@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -59,3 +60,27 @@ class TicketArgs(BaseModel):
 
 class DeleteAccountArgs(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+
+
+
+class WorkflowHistoryItem(BaseModel):
+    id: str
+    request_id: str
+    user_id: str
+    conversation_id: str | None = None
+    input_text: str
+    lifecycle_status: str
+    confidence: float = Field(ge=0, le=1)
+    escalation_required: bool
+    created_at: datetime
+
+
+class WorkflowHistoryPage(BaseModel):
+    items: list[WorkflowHistoryItem]
+    limit: int
+    offset: int
+    total: int
+
+
+class WorkflowHistoryDetail(WorkflowHistoryItem):
+    result: dict[str, Any]

@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -296,3 +297,158 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
         ).all()
 
         assert audits == []
+
+
+
+async def create_test_workflow_run(
+    *,
+    user_id: str,
+    request_id: str | None = None,
+    created_at: datetime | None = None,
+) -> str:
+    run_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
+
+    async with SessionLocal() as session:
+        run = WorkflowRun(
+            id=run_id,
+            request_id=request_id,
+            user_id=user_id,
+            conversation_id=str(uuid.uuid4()),
+            input_text="Test workflow history request",
+            result_json={
+                "lifecycle_status": "completed",
+                "response": {
+                    "answer": "Test response",
+                    "sources": [],
+                    "actions_taken": [],
+                    "blocked_actions": [],
+                    "escalation_required": False,
+                },
+            },
+            confidence=0.95,
+            escalation_required=False,
+        )
+        if created_at is not None:
+            run.created_at = created_at
+
+        session.add(run)
+        await session.commit()
+
+    return run_id
+
+
+async def cleanup_workflow_runs(*run_ids: str) -> None:
+    async with SessionLocal() as session:
+        for run_id in run_ids:
+            run = await session.get(WorkflowRun, run_id)
+            if run is not None:
+                await session.delete(run)
+        await session.commit()
+
+
+async def test_workflow_history_requires_authentication(client):
+    response = await client.get(
+        "/api/v1/workflows",
+        params={"user_id": "history-test-user"},
+    )
+    assert response.status_code == 401
+
+
+async def test_workflow_history_lists_only_requested_user(client):
+    user_id = f"history-user-{uuid.uuid4()}"
+    other_user_id = f"other-user-{uuid.uuid4()}"
+
+    own_run_id = await create_test_workflow_run(user_id=user_id)
+    other_run_id = await create_test_workflow_run(user_id=other_user_id)
+
+    try:
+        response = await client.get(
+            "/api/v1/workflows",
+            params={"user_id": user_id, "limit": 10, "offset": 0},
+            headers={"Authorization": "Bearer test-approval-token"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == own_run_id
+        assert body["items"][0]["user_id"] == user_id
+        assert body["items"][0]["lifecycle_status"] == "completed"
+    finally:
+        await cleanup_workflow_runs(own_run_id, other_run_id)
+
+
+async def test_workflow_history_pagination(client):
+    user_id = f"history-page-user-{uuid.uuid4()}"
+    run_ids = []
+
+    try:
+        for index in range(3):
+            run_ids.append(
+                await create_test_workflow_run(
+                    user_id=user_id,
+                    created_at=datetime.now(UTC)
+                    + timedelta(seconds=index),
+                )
+            )
+
+        headers = {"Authorization": "Bearer test-approval-token"}
+        first = await client.get(
+            "/api/v1/workflows",
+            params={"user_id": user_id, "limit": 2, "offset": 0},
+            headers=headers,
+        )
+        second = await client.get(
+            "/api/v1/workflows",
+            params={"user_id": user_id, "limit": 2, "offset": 2},
+            headers=headers,
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["total"] == 3
+        assert len(first.json()["items"]) == 2
+        assert len(second.json()["items"]) == 1
+        assert first.json()["items"][0]["created_at"] >= (
+            first.json()["items"][1]["created_at"]
+        )
+    finally:
+        await cleanup_workflow_runs(*run_ids)
+
+
+async def test_workflow_history_detail_and_cross_user_access(client):
+    owner_id = f"history-owner-{uuid.uuid4()}"
+    other_user_id = f"history-non-owner-{uuid.uuid4()}"
+    run_id = await create_test_workflow_run(user_id=owner_id)
+
+    try:
+        headers = {"Authorization": "Bearer test-approval-token"}
+
+        own_response = await client.get(
+            f"/api/v1/workflows/{run_id}",
+            params={"user_id": owner_id},
+            headers=headers,
+        )
+        other_response = await client.get(
+            f"/api/v1/workflows/{run_id}",
+            params={"user_id": other_user_id},
+            headers=headers,
+        )
+
+        assert own_response.status_code == 200
+        assert own_response.json()["id"] == run_id
+        assert own_response.json()["result"]["answer"] == "Test response"
+        assert other_response.status_code == 404
+    finally:
+        await cleanup_workflow_runs(run_id)
+
+
+async def test_workflow_history_rejects_invalid_pagination(client):
+    response = await client.get(
+        "/api/v1/workflows",
+        params={"user_id": "history-test-user", "limit": 101},
+        headers={"Authorization": "Bearer test-approval-token"},
+    )
+    assert response.status_code == 422

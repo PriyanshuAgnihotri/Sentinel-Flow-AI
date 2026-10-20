@@ -1,12 +1,20 @@
 
 import hmac
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import get_session
-from app.schemas.workflow import ApprovalDecision, ChatRequest, WorkflowResponse
+from app.models.tables import WorkflowRun
+from app.schemas.workflow import (
+    ApprovalDecision,
+    ChatRequest,
+    WorkflowHistoryDetail,
+    WorkflowHistoryPage,
+    WorkflowResponse,
+)
 from app.services.approval_service import (
     ApprovalAlreadyDecidedError,
     ApprovalNotFoundError,
@@ -136,3 +144,117 @@ async def reject(
         authorization,
         session,
     )
+
+
+
+def _workflow_history_item(run: WorkflowRun) -> dict:
+    stored_result = run.result_json or {}
+    response = stored_result.get("response", {})
+
+    return {
+        "id": run.id,
+        "request_id": run.request_id,
+        "user_id": run.user_id,
+        "conversation_id": run.conversation_id,
+        "input_text": run.input_text,
+        "lifecycle_status": stored_result.get(
+            "lifecycle_status", "completed"
+        ),
+        "confidence": run.confidence,
+        "escalation_required": run.escalation_required,
+        "created_at": run.created_at,
+        "result": response,
+    }
+
+
+@router.get("/workflows", response_model=WorkflowHistoryPage)
+async def list_workflow_history(
+    user_id: str = Query(min_length=1, max_length=128),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = session_dependency,
+):
+    configured_token = settings.approval_api_token
+
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Workflow history authentication is not configured.",
+        )
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required.")
+
+    supplied_token = authorization.removeprefix("Bearer ").strip()
+    if not supplied_token or not hmac.compare_digest(
+        supplied_token, configured_token
+    ):
+        raise HTTPException(status_code=401, detail="Invalid bearer token.")
+
+    total = await session.scalar(
+        select(func.count())
+        .select_from(WorkflowRun)
+        .where(WorkflowRun.user_id == user_id)
+    )
+
+    runs = (
+        await session.scalars(
+            select(WorkflowRun)
+            .where(WorkflowRun.user_id == user_id)
+            .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    return {
+        "items": [
+            {
+                key: value
+                for key, value in _workflow_history_item(run).items()
+                if key != "result"
+            }
+            for run in runs
+        ],
+        "limit": limit,
+        "offset": offset,
+        "total": total or 0,
+    }
+
+
+@router.get("/workflows/{run_id}", response_model=WorkflowHistoryDetail)
+async def get_workflow_history_detail(
+    run_id: str,
+    user_id: str = Query(min_length=1, max_length=128),
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = session_dependency,
+):
+    configured_token = settings.approval_api_token
+
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Workflow history authentication is not configured.",
+        )
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required.")
+
+    supplied_token = authorization.removeprefix("Bearer ").strip()
+    if not supplied_token or not hmac.compare_digest(
+        supplied_token, configured_token
+    ):
+        raise HTTPException(status_code=401, detail="Invalid bearer token.")
+
+    run = await session.scalar(
+        select(WorkflowRun).where(
+            WorkflowRun.id == run_id,
+            WorkflowRun.user_id == user_id,
+        )
+    )
+
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found.")
+
+    return _workflow_history_item(run)
