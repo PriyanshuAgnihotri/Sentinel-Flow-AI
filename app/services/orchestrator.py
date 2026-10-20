@@ -13,6 +13,10 @@ from app.services.observability import observe, trace_ids
 logger = logging.getLogger(__name__)
 
 
+class ApprovalPersistenceError(Exception):
+    """Raised when a required approval cannot be persisted."""
+
+
 class Orchestrator:
     def __init__(self, cache: SemanticCache | None = None):
         self.cache = cache
@@ -32,7 +36,6 @@ class Orchestrator:
 
         try:
             # Run deterministic guardrails before any cache lookup.
-            # Unsafe inputs must never be answered from a cached response.
             guardrail_result = inspect_input(message)
 
             if not guardrail_result.allowed:
@@ -45,7 +48,6 @@ class Orchestrator:
                         "steps": 0,
                     }
                 )
-
                 result = self._build_result(
                     state=state,
                     request_id=request_id,
@@ -55,7 +57,7 @@ class Orchestrator:
                 self._finish_span(span, state, result)
                 return result
 
-            # Cache access is restricted to the exact request and user scope.
+            # Only exact requests within the user scope can be cache hits.
             if self.cache:
                 hit = await self.cache.lookup(message, user_id)
                 if hit:
@@ -86,23 +88,33 @@ class Orchestrator:
             )
 
             # Persist a review request for refund-related escalations.
-            # Approval records do not authorize or execute the refund.
+            # This creates a review record only; it never issues a refund.
             if (
                 state.get("intent") == Intent.REFUND.value
                 and result["escalation_required"]
                 and not result["blocked_actions"]
             ):
-                approval = await ApprovalService.create(
-                    session,
-                    request_id=request_id,
-                    user_id=user_id,
-                    action={
-                        "type": "refund_review",
-                        "message": message,
-                        "requires_identity_verification": True,
-                        "execution_enabled": False,
-                    },
-                )
+                try:
+                    approval = await ApprovalService.create(
+                        session,
+                        request_id=request_id,
+                        user_id=user_id,
+                        action={
+                            "type": "refund_review",
+                            "message": message,
+                            "requires_identity_verification": True,
+                            "execution_enabled": False,
+                        },
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Unable to persist required refund approval",
+                        extra={"request_id": request_id},
+                    )
+                    raise ApprovalPersistenceError(
+                        "Unable to create the required refund approval"
+                    ) from exc
+
                 result["approval_id"] = approval.id
 
             if self.cache:
@@ -110,6 +122,18 @@ class Orchestrator:
 
             self._finish_span(span, state, result)
             return result
+
+        except ApprovalPersistenceError:
+            if span:
+                try:
+                    span.update(level="ERROR")
+                    span.end()
+                except Exception:
+                    logger.warning(
+                        "Unable to finalize failed workflow span",
+                        exc_info=True,
+                    )
+            raise
 
         except Exception:
             logger.exception(
