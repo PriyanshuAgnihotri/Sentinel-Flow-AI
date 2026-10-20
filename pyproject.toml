@@ -5,7 +5,7 @@ description = "Policy-controlled, observable multi-agent customer-support workfl
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "pydantic-settings>=2.5,<3",
-  "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "redis>=5,<6",
+  "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "alembic>=1.13,<2", "redis>=5,<6",
   "langgraph>=0.2,<1", "langchain-core>=0.3,<1", "openai>=1.50,<3",
   "langfuse>=2.50,<4", "tenacity>=9,<10", "numpy>=1.26,<3"
 ]
@@ -13,6 +13,8 @@ dependencies = [
 dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "httpx>=0.27,<1", "ruff>=0.7,<1"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
@@ -20,3 +22,7 @@ target-version = "py311"
 [tool.setuptools.packages.find]
 include = ["app*"]
 exclude = ["frontend*", "tests*"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/*.py" = ["I001", "UP035", "UP007"]
+"migrations/versions/*.py" = ["I001", "UP035", "UP007"]

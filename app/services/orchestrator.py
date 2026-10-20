@@ -1,29 +1,87 @@
+import logging
+
 from app.agents.graph import workflow_graph
-from app.services.observability import trace_ids, observe
 from app.services.cache import SemanticCache
+from app.services.observability import observe, trace_ids
+
+logger = logging.getLogger(__name__)
+
 
 class Orchestrator:
-    def __init__(self, cache: SemanticCache | None = None): self.cache = cache
+    def __init__(self, cache: SemanticCache | None = None):
+        self.cache = cache
+
     async def run(self, message: str, user_id: str) -> dict:
         request_id, trace_id = trace_ids()
         span = observe("sentinelflow.workflow", request_id, {"user_id": user_id})
+
         try:
             if self.cache:
                 hit = await self.cache.lookup(message)
                 if hit:
                     hit.update({"request_id": request_id, "trace_id": trace_id})
                     return hit
-            state = workflow_graph.invoke({"message": message, "user_id": user_id, "request_id": request_id, "trace_id": trace_id, "steps": 0})
-            result = {"answer": state.get("answer", "I could not safely resolve this request."), "confidence": state.get("confidence", .2),
-                "sources": state.get("sources", []), "actions_taken": state.get("actions_taken", []), "blocked_actions": state.get("blocked_actions", []),
-                "escalation_required": state.get("escalation_required", False), "trace_id": trace_id, "request_id": request_id, "cache_hit": False}
-            if self.cache: await self.cache.store(message, result)
+
+            state = workflow_graph.invoke(
+                {
+                    "message": message,
+                    "user_id": user_id,
+                    "request_id": request_id,
+                    "trace_id": trace_id,
+                    "steps": 0,
+                }
+            )
+
+            result = {
+                "answer": state.get("answer", "I could not safely resolve this request."),
+                "confidence": state.get("confidence", 0.2),
+                "sources": state.get("sources", []),
+                "actions_taken": state.get("actions_taken", []),
+                "blocked_actions": state.get("blocked_actions", []),
+                "escalation_required": state.get("escalation_required", False),
+                "trace_id": trace_id,
+                "request_id": request_id,
+                "cache_hit": False,
+            }
+
+            if self.cache:
+                await self.cache.store(message, result)
+
             if span:
-                try: span.update(output={"intent": state.get("intent"), "confidence": result["confidence"], "escalation_required": result["escalation_required"]}); span.end()
-                except Exception: pass
+                try:
+                    span.update(
+                        output={
+                            "intent": state.get("intent"),
+                            "confidence": result["confidence"],
+                            "escalation_required": result["escalation_required"],
+                        }
+                    )
+                    span.end()
+                except Exception:
+                    logger.warning("Unable to finalize workflow telemetry span", exc_info=True)
+
             return result
+
         except Exception:
+            logger.exception("Workflow execution failed; returning safe fallback")
             if span:
-                try: span.update(level="ERROR"); span.end()
-                except Exception: pass
-            return {"answer": "The workflow encountered a temporary error. No sensitive action was performed; please retry or contact support.", "confidence": .1, "sources": [], "actions_taken": [], "blocked_actions": [], "escalation_required": True, "trace_id": trace_id, "request_id": request_id, "cache_hit": False}
+                try:
+                    span.update(level="ERROR")
+                    span.end()
+                except Exception:
+                    logger.warning("Unable to finalize failed workflow span", exc_info=True)
+
+            return {
+                "answer": (
+                    "The workflow encountered a temporary error. No sensitive action was "
+                    "performed; please retry or contact support."
+                ),
+                "confidence": 0.1,
+                "sources": [],
+                "actions_taken": [],
+                "blocked_actions": [],
+                "escalation_required": True,
+                "trace_id": trace_id,
+                "request_id": request_id,
+                "cache_hit": False,
+            }
