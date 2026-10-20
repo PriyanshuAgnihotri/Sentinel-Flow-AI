@@ -18,9 +18,13 @@ session_dependency = Depends(get_session)
 
 
 @router.post("/chat", response_model=WorkflowResponse)
-async def chat(body: ChatRequest, request: Request):
+async def chat(
+    body: ChatRequest,
+    request: Request,
+    session: AsyncSession = session_dependency,
+):
     orchestrator = Orchestrator(getattr(request.app.state, "cache", None))
-    result = await orchestrator.run(body.message, body.user_id)
+    result = await orchestrator.run(body.message, body.user_id, session=session)
     return result
 
 
