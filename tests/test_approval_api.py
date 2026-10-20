@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -10,6 +11,7 @@ from app.db.session import SessionLocal
 from app.main import app
 from app.models.tables import Approval, AuditLog
 from app.services.approval_service import ApprovalService
+from app.services.orchestrator import ApprovalPersistenceError
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -138,3 +140,34 @@ async def test_approval_api_returns_409_for_duplicate_decision(client):
         assert second.status_code == 409
     finally:
         await cleanup_test_records(approval_id, request_id)
+
+
+async def test_chat_returns_503_when_refund_approval_cannot_be_saved(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        ApprovalService,
+        "create",
+        AsyncMock(
+            side_effect=ApprovalPersistenceError(
+                "Unable to create the required refund approval"
+            )
+        ),
+    )
+
+    response = await client.post(
+        "/api/v1/chat",
+        json={
+            "message": "I want a refund for order #12345",
+            "user_id": f"approval-failure-test-{uuid.uuid4()}",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "The required approval could not be saved. "
+        "No refund was issued; please retry later."
+    )
+    assert "approval_id" not in response.json()
+    ApprovalService.create.assert_awaited_once()

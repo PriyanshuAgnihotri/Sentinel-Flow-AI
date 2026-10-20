@@ -1,3 +1,4 @@
+
 import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -11,7 +12,7 @@ from app.services.approval_service import (
     ApprovalNotFoundError,
     ApprovalService,
 )
-from app.services.orchestrator import Orchestrator
+from app.services.orchestrator import ApprovalPersistenceError, Orchestrator
 
 router = APIRouter()
 session_dependency = Depends(get_session)
@@ -24,7 +25,22 @@ async def chat(
     session: AsyncSession = session_dependency,
 ):
     orchestrator = Orchestrator(getattr(request.app.state, "cache", None))
-    result = await orchestrator.run(body.message, body.user_id, session=session)
+
+    try:
+        result = await orchestrator.run(
+            body.message,
+            body.user_id,
+            session=session,
+        )
+    except ApprovalPersistenceError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The required approval could not be saved. "
+                "No refund was issued; please retry later."
+            ),
+        ) from None
+
     return result
 
 
@@ -47,7 +63,10 @@ async def _decide_approval(
         raise HTTPException(status_code=401, detail="Bearer token required.")
 
     supplied_token = authorization.removeprefix("Bearer ").strip()
-    if not supplied_token or not hmac.compare_digest(supplied_token, configured_token):
+    if not supplied_token or not hmac.compare_digest(
+        supplied_token,
+        configured_token,
+    ):
         raise HTTPException(status_code=401, detail="Invalid bearer token.")
 
     try:
@@ -84,7 +103,13 @@ async def approve(
     authorization: str | None = Header(default=None),
     session: AsyncSession = session_dependency,
 ):
-    return await _decide_approval(approval_id, decision, "approved", authorization, session)
+    return await _decide_approval(
+        approval_id,
+        decision,
+        "approved",
+        authorization,
+        session,
+    )
 
 
 @router.post("/approvals/{approval_id}/reject")
@@ -94,4 +119,10 @@ async def reject(
     authorization: str | None = Header(default=None),
     session: AsyncSession = session_dependency,
 ):
-    return await _decide_approval(approval_id, decision, "rejected", authorization, session)
+    return await _decide_approval(
+        approval_id,
+        decision,
+        "rejected",
+        authorization,
+        session,
+    )
