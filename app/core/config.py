@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     semantic_cache_ttl_seconds: int = 3600
     max_graph_steps: int = 8
     approval_api_token: str = ""
+    auth_jwt_secret: str = ""
+    auth_jwt_issuer: str = ""
+    auth_jwt_audience: str = ""
     approval_api_actor_id: str = "approval-admin"
 
     @property

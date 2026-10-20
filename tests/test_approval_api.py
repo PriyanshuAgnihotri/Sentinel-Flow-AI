@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -24,12 +25,40 @@ async def client(monkeypatch):
     monkeypatch.setattr(settings, "approval_api_token", "test-approval-token")
     monkeypatch.setattr(settings, "approval_api_actor_id", "api-test-actor")
 
+    monkeypatch.setattr(
+        "app.core.auth.settings.auth_jwt_secret",
+        "test-secret-for-unit-tests-32-bytes-minimum",
+    )
+    monkeypatch.setattr(
+        "app.core.auth.settings.auth_jwt_issuer",
+        "sentinelflow-tests",
+    )
+    monkeypatch.setattr(
+        "app.core.auth.settings.auth_jwt_audience",
+        "sentinelflow-api",
+    )
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
         base_url="http://test",
     ) as test_client:
         yield test_client
+
+
+def create_history_token(user_id: str) -> str:
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": user_id,
+            "iss": "sentinelflow-tests",
+            "aud": "sentinelflow-api",
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+        },
+        settings.auth_jwt_secret,
+        algorithm="HS256",
+    )
 
 
 async def create_test_approval():
@@ -348,14 +377,11 @@ async def cleanup_workflow_runs(*run_ids: str) -> None:
 
 
 async def test_workflow_history_requires_authentication(client):
-    response = await client.get(
-        "/api/v1/workflows",
-        params={"user_id": "history-test-user"},
-    )
+    response = await client.get("/api/v1/workflows")
     assert response.status_code == 401
 
 
-async def test_workflow_history_lists_only_requested_user(client):
+async def test_workflow_history_lists_only_authenticated_user(client):
     user_id = f"history-user-{uuid.uuid4()}"
     other_user_id = f"other-user-{uuid.uuid4()}"
 
@@ -365,8 +391,8 @@ async def test_workflow_history_lists_only_requested_user(client):
     try:
         response = await client.get(
             "/api/v1/workflows",
-            params={"user_id": user_id, "limit": 10, "offset": 0},
-            headers={"Authorization": "Bearer test-approval-token"},
+            params={"limit": 10, "offset": 0},
+            headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
         )
 
         assert response.status_code == 200
@@ -389,20 +415,19 @@ async def test_workflow_history_pagination(client):
             run_ids.append(
                 await create_test_workflow_run(
                     user_id=user_id,
-                    created_at=datetime.now(UTC)
-                    + timedelta(seconds=index),
+                    created_at=datetime.now(UTC) + timedelta(seconds=index),
                 )
             )
 
-        headers = {"Authorization": "Bearer test-approval-token"}
+        headers = {"Authorization": f"Bearer {create_history_token(user_id)}"}
         first = await client.get(
             "/api/v1/workflows",
-            params={"user_id": user_id, "limit": 2, "offset": 0},
+            params={"limit": 2, "offset": 0},
             headers=headers,
         )
         second = await client.get(
             "/api/v1/workflows",
-            params={"user_id": user_id, "limit": 2, "offset": 2},
+            params={"limit": 2, "offset": 2},
             headers=headers,
         )
 
@@ -424,17 +449,13 @@ async def test_workflow_history_detail_and_cross_user_access(client):
     run_id = await create_test_workflow_run(user_id=owner_id)
 
     try:
-        headers = {"Authorization": "Bearer test-approval-token"}
-
         own_response = await client.get(
             f"/api/v1/workflows/{run_id}",
-            params={"user_id": owner_id},
-            headers=headers,
+            headers={"Authorization": f"Bearer {create_history_token(owner_id)}"},
         )
         other_response = await client.get(
             f"/api/v1/workflows/{run_id}",
-            params={"user_id": other_user_id},
-            headers=headers,
+            headers={"Authorization": f"Bearer {create_history_token(other_user_id)}"},
         )
 
         assert own_response.status_code == 200
@@ -446,9 +467,18 @@ async def test_workflow_history_detail_and_cross_user_access(client):
 
 
 async def test_workflow_history_rejects_invalid_pagination(client):
+    user_id = f"history-pagination-user-{uuid.uuid4()}"
     response = await client.get(
         "/api/v1/workflows",
-        params={"user_id": "history-test-user", "limit": 101},
-        headers={"Authorization": "Bearer test-approval-token"},
+        params={"limit": 101},
+        headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
     )
     assert response.status_code == 422
+
+
+async def test_workflow_history_rejects_invalid_jwt(client):
+    response = await client.get(
+        "/api/v1/workflows",
+        headers={"Authorization": "Bearer not-a-valid-jwt"},
+    )
+    assert response.status_code == 401
