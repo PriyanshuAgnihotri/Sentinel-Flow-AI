@@ -9,9 +9,13 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.main import app
-from app.models.tables import Approval, AuditLog
+from app.models.tables import Approval, AuditLog, WorkflowRun
 from app.services.approval_service import ApprovalService
 from app.services.orchestrator import ApprovalPersistenceError
+from app.services.workflow_run_service import (
+    WorkflowRunPersistenceError,
+    WorkflowRunService,
+)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -171,3 +175,124 @@ async def test_chat_returns_503_when_refund_approval_cannot_be_saved(
     )
     assert "approval_id" not in response.json()
     ApprovalService.create.assert_awaited_once()
+
+
+async def test_chat_persists_workflow_run_and_audit(client):
+    user_id = f"workflow-api-test-{uuid.uuid4()}"
+    conversation_id = str(uuid.uuid4())
+    request_id = None
+
+    try:
+        response = await client.post(
+            "/api/v1/chat",
+            json={
+                "message": "How do I reset my password?",
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        request_id = body["request_id"]
+
+        async with SessionLocal() as session:
+            run = await session.scalar(
+                select(WorkflowRun).where(
+                    WorkflowRun.request_id == request_id,
+                    WorkflowRun.user_id == user_id,
+                )
+            )
+
+            assert run is not None
+            assert run.conversation_id == conversation_id
+            assert run.input_text == "How do I reset my password?"
+            assert run.result_json["response"]["answer"] == body["answer"]
+
+            lifecycle_status = run.result_json["lifecycle_status"]
+            assert lifecycle_status in {
+                "completed",
+                "approval_required",
+                "blocked",
+                "failed",
+            }
+
+            audit = await session.scalar(
+                select(AuditLog).where(
+                    AuditLog.request_id == request_id,
+                    AuditLog.user_id == user_id,
+                    AuditLog.event_type == f"workflow.{lifecycle_status}",
+                )
+            )
+
+            assert audit is not None
+            assert audit.details["workflow_run_id"] == run.id
+
+    finally:
+        if request_id is not None:
+            async with SessionLocal() as session:
+                await session.execute(
+                    WorkflowRun.__table__.delete().where(
+                        WorkflowRun.request_id == request_id,
+                        WorkflowRun.user_id == user_id,
+                    )
+                )
+                await session.execute(
+                    AuditLog.__table__.delete().where(
+                        AuditLog.request_id == request_id,
+                        AuditLog.user_id == user_id,
+                    )
+                )
+                await session.commit()
+
+
+
+async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fails(
+    client,
+    monkeypatch,
+):
+    user_id = f"atomicity-test-{uuid.uuid4()}"
+
+    async def fail_workflow_run_persistence(*args, **kwargs):
+        raise WorkflowRunPersistenceError(
+            "Unable to persist workflow execution"
+        )
+
+    monkeypatch.setattr(
+        WorkflowRunService,
+        "record",
+        fail_workflow_run_persistence,
+    )
+
+    response = await client.post(
+        "/api/v1/chat",
+        json={
+            "message": "I want a refund for order #12345",
+            "user_id": user_id,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "The workflow result could not be saved. Please retry later."
+    )
+
+    async with SessionLocal() as session:
+        approvals = (
+            await session.scalars(
+                select(Approval).where(Approval.user_id == user_id)
+            )
+        ).all()
+
+        assert approvals == []
+
+        audits = (
+            await session.scalars(
+                select(AuditLog).where(
+                    AuditLog.user_id == user_id,
+                    AuditLog.event_type == "approval.created",
+                )
+            )
+        ).all()
+
+        assert audits == []
