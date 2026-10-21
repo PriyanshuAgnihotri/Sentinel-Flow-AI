@@ -96,7 +96,10 @@ async def test_approval_api_requires_authentication(client, endpoint):
     assert response.status_code == 401
 
 
-async def test_approval_api_returns_503_when_token_not_configured(client, monkeypatch):
+async def test_approval_api_returns_503_when_token_not_configured(
+    client,
+    monkeypatch,
+):
     monkeypatch.setattr(settings, "approval_api_token", "")
     response = await client.post(
         f"/api/v1/approvals/{uuid.uuid4()}/approve",
@@ -110,7 +113,11 @@ async def test_approval_api_returns_503_when_token_not_configured(client, monkey
     ("endpoint", "expected_status"),
     [("approve", "approved"), ("reject", "rejected")],
 )
-async def test_approval_api_persists_decision_and_audit(client, endpoint, expected_status):
+async def test_approval_api_persists_decision_and_audit(
+    client,
+    endpoint,
+    expected_status,
+):
     approval_id, request_id = await create_test_approval()
     try:
         response = await client.post(
@@ -184,24 +191,24 @@ async def test_chat_returns_503_when_refund_approval_cannot_be_saved(
         ApprovalService,
         "create",
         AsyncMock(
-            side_effect=ApprovalPersistenceError(
-                "Unable to create the required refund approval"
-            )
+            side_effect=ApprovalPersistenceError("Unable to create the required refund approval")
         ),
     )
 
+    user_id = f"approval-failure-test-{uuid.uuid4()}"
+
     response = await client.post(
         "/api/v1/chat",
+        headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
         json={
             "message": "I want a refund for order #12345",
-            "user_id": f"approval-failure-test-{uuid.uuid4()}",
+            "user_id": user_id,
         },
     )
 
     assert response.status_code == 503
     assert response.json()["detail"] == (
-        "The required approval could not be saved. "
-        "No refund was issued; please retry later."
+        "The required approval could not be saved. No refund was issued; please retry later."
     )
     assert "approval_id" not in response.json()
     ApprovalService.create.assert_awaited_once()
@@ -215,6 +222,7 @@ async def test_chat_persists_workflow_run_and_audit(client):
     try:
         response = await client.post(
             "/api/v1/chat",
+            headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
             json={
                 "message": "How do I reset my password?",
                 "user_id": user_id,
@@ -276,7 +284,6 @@ async def test_chat_persists_workflow_run_and_audit(client):
                 await session.commit()
 
 
-
 async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fails(
     client,
     monkeypatch,
@@ -284,9 +291,7 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
     user_id = f"atomicity-test-{uuid.uuid4()}"
 
     async def fail_workflow_run_persistence(*args, **kwargs):
-        raise WorkflowRunPersistenceError(
-            "Unable to persist workflow execution"
-        )
+        raise WorkflowRunPersistenceError("Unable to persist workflow execution")
 
     monkeypatch.setattr(
         WorkflowRunService,
@@ -296,6 +301,7 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
 
     response = await client.post(
         "/api/v1/chat",
+        headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
         json={
             "message": "I want a refund for order #12345",
             "user_id": user_id,
@@ -309,9 +315,7 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
 
     async with SessionLocal() as session:
         approvals = (
-            await session.scalars(
-                select(Approval).where(Approval.user_id == user_id)
-            )
+            await session.scalars(select(Approval).where(Approval.user_id == user_id))
         ).all()
 
         assert approvals == []
@@ -326,7 +330,6 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
         ).all()
 
         assert audits == []
-
 
 
 async def create_test_workflow_run(
@@ -436,9 +439,7 @@ async def test_workflow_history_pagination(client):
         assert first.json()["total"] == 3
         assert len(first.json()["items"]) == 2
         assert len(second.json()["items"]) == 1
-        assert first.json()["items"][0]["created_at"] >= (
-            first.json()["items"][1]["created_at"]
-        )
+        assert first.json()["items"][0]["created_at"] >= (first.json()["items"][1]["created_at"])
     finally:
         await cleanup_workflow_runs(*run_ids)
 

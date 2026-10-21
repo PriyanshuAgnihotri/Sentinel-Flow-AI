@@ -31,6 +31,7 @@ session_dependency = Depends(get_session)
 async def chat(
     body: ChatRequest,
     request: Request,
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = session_dependency,
 ):
     orchestrator = Orchestrator(getattr(request.app.state, "cache", None))
@@ -38,7 +39,7 @@ async def chat(
     try:
         result = await orchestrator.run(
             body.message,
-            body.user_id,
+            current_user,
             session=session,
             conversation_id=body.conversation_id,
         )
