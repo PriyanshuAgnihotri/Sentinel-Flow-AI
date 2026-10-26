@@ -40,6 +40,7 @@ async def test_record_persists_run_and_audit():
             assert run.request_id == request_id
             assert run.user_id == user_id
             assert run.result_json["lifecycle_status"] == "completed"
+            assert run.lifecycle_status == "completed"
             assert run.result_json["response"]["answer"] == ("Your order is in transit.")
 
             audit = await session.scalar(
@@ -113,7 +114,8 @@ async def test_record_persists_explicit_failed_status():
                 status="failed",
             )
 
-            assert run.result_json["lifecycle_status"] == "failed"
+            assert run.lifecycle_status == "failed"
+            assert run.result_json["lifecycle_status"] == run.lifecycle_status
         finally:
             await session.execute(
                 delete(WorkflowRun).where(
