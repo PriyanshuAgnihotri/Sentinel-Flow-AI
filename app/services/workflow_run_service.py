@@ -4,8 +4,9 @@ from typing import ClassVar
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.services.workflow_lifecycle import WorkflowLifecycle
+
 from app.models.tables import AuditLog, WorkflowRun
+from app.services.workflow_lifecycle import WorkflowLifecycle
 
 logger = logging.getLogger(__name__)
 

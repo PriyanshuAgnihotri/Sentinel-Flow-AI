@@ -7,13 +7,14 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-from app.services.workflow_lifecycle import WorkflowLifecycle
+
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.tables import Approval, AuditLog, WorkflowRun
 from app.services.approval_service import ApprovalService
 from app.services.orchestrator import ApprovalPersistenceError
+from app.services.workflow_lifecycle import WorkflowLifecycle
 from app.services.workflow_run_service import (
     WorkflowRunPersistenceError,
     WorkflowRunService,
