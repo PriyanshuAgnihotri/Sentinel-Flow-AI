@@ -1,4 +1,3 @@
-
 import logging
 from contextlib import asynccontextmanager
 from typing import ClassVar
@@ -29,12 +28,19 @@ class WorkflowRunPersistenceError(Exception):
 class WorkflowRunService:
     """Persist workflow execution results and lifecycle outcomes."""
 
-    VALID_STATUSES: ClassVar[set[str]] = {
-        "completed",
-        "approval_required",
-        "blocked",
-        "failed",
-    }
+    STATUS_COMPLETED: ClassVar[str] = "completed"
+    STATUS_APPROVAL_REQUIRED: ClassVar[str] = "approval_required"
+    STATUS_BLOCKED: ClassVar[str] = "blocked"
+    STATUS_FAILED: ClassVar[str] = "failed"
+
+    VALID_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {
+            STATUS_COMPLETED,
+            STATUS_APPROVAL_REQUIRED,
+            STATUS_BLOCKED,
+            STATUS_FAILED,
+        }
+    )
 
     @staticmethod
     def determine_status(result: dict) -> str:
@@ -60,14 +66,10 @@ class WorkflowRunService:
         status: str | None = None,
     ) -> WorkflowRun:
         """Persist a workflow run and its audit event."""
-        lifecycle_status = (
-            status if status is not None else cls.determine_status(result)
-        )
+        lifecycle_status = status if status is not None else cls.determine_status(result)
 
         if lifecycle_status not in cls.VALID_STATUSES:
-            raise ValueError(
-                f"Unsupported workflow status: {lifecycle_status}"
-            )
+            raise ValueError(f"Unsupported workflow status: {lifecycle_status}")
 
         run_id = str(uuid4())
 
@@ -82,9 +84,7 @@ class WorkflowRunService:
                 "response": result,
             },
             confidence=float(result.get("confidence", 0.0)),
-            escalation_required=bool(
-                result.get("escalation_required", False)
-            ),
+            escalation_required=bool(result.get("escalation_required", False)),
         )
 
         audit = AuditLog(
@@ -114,6 +114,4 @@ class WorkflowRunService:
                     "workflow_run_id": run_id,
                 },
             )
-            raise WorkflowRunPersistenceError(
-                "Unable to persist workflow execution"
-            ) from exc
+            raise WorkflowRunPersistenceError("Unable to persist workflow execution") from exc

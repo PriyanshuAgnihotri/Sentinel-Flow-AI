@@ -1,4 +1,3 @@
-
 import uuid
 from uuid import uuid4
 
@@ -41,9 +40,7 @@ async def test_record_persists_run_and_audit():
             assert run.request_id == request_id
             assert run.user_id == user_id
             assert run.result_json["lifecycle_status"] == "completed"
-            assert run.result_json["response"]["answer"] == (
-                "Your order is in transit."
-            )
+            assert run.result_json["response"]["answer"] == ("Your order is in transit.")
 
             audit = await session.scalar(
                 select(AuditLog).where(
@@ -56,14 +53,10 @@ async def test_record_persists_run_and_audit():
     finally:
         async with SessionLocal() as session:
             await session.execute(
-                WorkflowRun.__table__.delete().where(
-                    WorkflowRun.request_id == request_id
-                )
+                WorkflowRun.__table__.delete().where(WorkflowRun.request_id == request_id)
             )
             await session.execute(
-                AuditLog.__table__.delete().where(
-                    AuditLog.request_id == request_id
-                )
+                AuditLog.__table__.delete().where(AuditLog.request_id == request_id)
             )
             await session.commit()
 
@@ -87,7 +80,6 @@ async def test_record_persists_run_and_audit():
             },
             "approval_required",
         ),
-        
         (
             {
                 "answer": "Done",
@@ -99,6 +91,7 @@ async def test_record_persists_run_and_audit():
 )
 def test_determine_lifecycle_status(result, expected):
     assert WorkflowRunService.determine_status(result) == expected
+
 
 @pytest.mark.asyncio
 async def test_record_persists_explicit_failed_status():
@@ -135,3 +128,19 @@ async def test_record_persists_explicit_failed_status():
                 )
             )
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_record_rejects_unsupported_status():
+    request_id = str(uuid4())
+
+    async with SessionLocal() as session:
+        with pytest.raises(ValueError, match="Unsupported workflow status"):
+            await WorkflowRunService.record(
+                session,
+                request_id=request_id,
+                user_id=f"workflow-invalid-test-{uuid4()}",
+                message="Test unsupported status",
+                result={"answer": "Test", "confidence": 0.5},
+                status="running",
+            )
