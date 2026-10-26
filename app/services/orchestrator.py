@@ -57,7 +57,26 @@ class Orchestrator:
             {"user_id": user_id},
         )
 
+        run_record = None
+
         try:
+            # Persist lifecycle checkpoints before guardrails or agent execution.
+            run_record = await WorkflowRunService.start(
+                session,
+                request_id=request_id,
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+            )
+            await session.commit()
+
+            run_record = await WorkflowRunService.transition(
+                session,
+                run=run_record,
+                target_status=WorkflowLifecycle.RUNNING,
+            )
+            await session.commit()
+
             guardrail_result = inspect_input(message)
 
             if not guardrail_result.allowed:
@@ -78,11 +97,8 @@ class Orchestrator:
                 )
                 await self._persist_run(
                     session,
-                    request_id=request_id,
-                    user_id=user_id,
-                    message=message,
+                    run_record=run_record,
                     result=result,
-                    conversation_id=conversation_id,
                 )
                 self._finish_span(span, state, result)
                 return result
@@ -100,11 +116,8 @@ class Orchestrator:
                     )
                     await self._persist_run(
                         session,
-                        request_id=request_id,
-                        user_id=user_id,
-                        message=message,
+                        run_record=run_record,
                         result=hit,
-                        conversation_id=conversation_id,
                     )
                     self._finish_cached_span(span, hit)
                     return hit
@@ -158,12 +171,13 @@ class Orchestrator:
 
                 await self._persist_run(
                     session,
-                    request_id=request_id,
-                    user_id=user_id,
-                    message=message,
+                    run_record=run_record,
                     result=result,
-                    conversation_id=conversation_id,
+                    commit=False,
                 )
+
+            # Commit approval creation and final workflow status atomically.
+            await session.commit()
 
             if self.cache:
                 await self.cache.store(message, user_id, result)
@@ -197,15 +211,20 @@ class Orchestrator:
                 "cache_hit": False,
             }
 
-            # Do not silently report success if recording the run fails.
+            # If a run was created, record the failure on that same run.
+            # If creation failed before a run existed, do not return a fallback
+            # without a durable workflow record.
+            if run_record is None:
+                self._end_error_span(span)
+                raise
+
+            # Avoid carrying any partial transaction into failure persistence.
+            await session.rollback()
             await self._persist_run(
                 session,
-                request_id=request_id,
-                user_id=user_id,
-                message=message,
+                run_record=run_record,
                 result=fallback,
-                conversation_id=conversation_id,
-                status="failed",
+                status=WorkflowLifecycle.FAILED,
             )
             self._end_error_span(span)
             return fallback
@@ -215,13 +234,12 @@ class Orchestrator:
     async def _persist_run(
         session: AsyncSession,
         *,
-        request_id: str,
-        user_id: str,
-        message: str,
+        run_record,
         result: dict,
-        conversation_id: str | None,
         status: str | None = None,
+        commit: bool = True,
     ) -> None:
+        """Persist the terminal state on the existing workflow run."""
         final_status = (
             status
             if status is not None
@@ -229,15 +247,15 @@ class Orchestrator:
         )
         Orchestrator._validate_final_status(final_status)
 
-        await WorkflowRunService.record(
+        await WorkflowRunService.transition(
             session,
-            request_id=request_id,
-            user_id=user_id,
-            message=message,
+            run=run_record,
+            target_status=final_status,
             result=result,
-            conversation_id=conversation_id,
-            status=final_status,
         )
+
+        if commit:
+            await session.commit()
 
 
     @staticmethod
