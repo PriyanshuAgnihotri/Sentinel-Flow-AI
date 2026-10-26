@@ -1,4 +1,3 @@
-
 import logging
 from contextlib import asynccontextmanager
 from typing import ClassVar
@@ -29,23 +28,30 @@ class WorkflowRunPersistenceError(Exception):
 class WorkflowRunService:
     """Persist workflow execution results and lifecycle outcomes."""
 
-    VALID_STATUSES: ClassVar[set[str]] = {
-        "completed",
-        "approval_required",
-        "blocked",
-        "failed",
-    }
+    STATUS_COMPLETED: ClassVar[str] = "completed"
+    STATUS_APPROVAL_REQUIRED: ClassVar[str] = "approval_required"
+    STATUS_BLOCKED: ClassVar[str] = "blocked"
+    STATUS_FAILED: ClassVar[str] = "failed"
 
-    @staticmethod
-    def determine_status(result: dict) -> str:
+    VALID_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {
+            STATUS_COMPLETED,
+            STATUS_APPROVAL_REQUIRED,
+            STATUS_BLOCKED,
+            STATUS_FAILED,
+        }
+    )
+
+    @classmethod
+    def determine_status(cls, result: dict) -> str:
         """Derive lifecycle status from the workflow response."""
         if result.get("blocked_actions"):
-            return "blocked"
+            return cls.STATUS_BLOCKED
 
         if result.get("approval_id") or result.get("escalation_required"):
-            return "approval_required"
+            return cls.STATUS_APPROVAL_REQUIRED
 
-        return "completed"
+        return cls.STATUS_COMPLETED
 
     @classmethod
     async def record(
@@ -77,6 +83,7 @@ class WorkflowRunService:
             user_id=user_id,
             conversation_id=conversation_id,
             input_text=message,
+            lifecycle_status=lifecycle_status,
             result_json={
                 "lifecycle_status": lifecycle_status,
                 "response": result,

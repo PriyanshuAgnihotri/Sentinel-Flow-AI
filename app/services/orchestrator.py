@@ -9,6 +9,7 @@ from app.schemas.workflow import Intent
 from app.services.approval_service import ApprovalService
 from app.services.cache import SemanticCache
 from app.services.observability import observe, trace_ids
+from app.services.workflow_lifecycle import WorkflowLifecycle
 from app.services.workflow_run_service import (
     WorkflowRunPersistenceError,
     WorkflowRunService,
@@ -31,6 +32,14 @@ class ApprovalPersistenceError(Exception):
 
 
 class Orchestrator:
+    @staticmethod
+    def _validate_final_status(status: str) -> None:
+        """Validate the transition from running to a terminal outcome."""
+        WorkflowLifecycle.validate_transition(
+            WorkflowLifecycle.RUNNING,
+            status,
+        )
+
     def __init__(self, cache: SemanticCache | None = None):
         self.cache = cache
 
@@ -201,6 +210,7 @@ class Orchestrator:
             self._end_error_span(span)
             return fallback
 
+
     @staticmethod
     async def _persist_run(
         session: AsyncSession,
@@ -212,6 +222,13 @@ class Orchestrator:
         conversation_id: str | None,
         status: str | None = None,
     ) -> None:
+        final_status = (
+            status
+            if status is not None
+            else WorkflowRunService.determine_status(result)
+        )
+        Orchestrator._validate_final_status(final_status)
+
         await WorkflowRunService.record(
             session,
             request_id=request_id,
@@ -219,8 +236,9 @@ class Orchestrator:
             message=message,
             result=result,
             conversation_id=conversation_id,
-            status=status,
+            status=final_status,
         )
+
 
     @staticmethod
     def _build_result(
