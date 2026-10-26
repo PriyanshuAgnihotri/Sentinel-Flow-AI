@@ -14,6 +14,7 @@ from app.main import app
 from app.models.tables import Approval, AuditLog, WorkflowRun
 from app.services.approval_service import ApprovalService
 from app.services.orchestrator import ApprovalPersistenceError
+from app.services.workflow_lifecycle import WorkflowLifecycle
 from app.services.workflow_run_service import (
     WorkflowRunPersistenceError,
     WorkflowRunService,
@@ -284,19 +285,37 @@ async def test_chat_persists_workflow_run_and_audit(client):
                 await session.commit()
 
 
+
 async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fails(
     client,
     monkeypatch,
 ):
     user_id = f"atomicity-test-{uuid.uuid4()}"
 
-    async def fail_workflow_run_persistence(*args, **kwargs):
-        raise WorkflowRunPersistenceError("Unable to persist workflow execution")
+    original_transition = WorkflowRunService.transition
+
+    async def fail_final_transition(session, *, run, target_status, result=None):
+        if target_status in {
+            WorkflowLifecycle.COMPLETED,
+            WorkflowLifecycle.APPROVAL_REQUIRED,
+            WorkflowLifecycle.BLOCKED,
+            WorkflowLifecycle.FAILED,
+        }:
+            raise WorkflowRunPersistenceError(
+                "Unable to persist workflow transition"
+            )
+
+        return await original_transition(
+            session,
+            run=run,
+            target_status=target_status,
+            result=result,
+        )
 
     monkeypatch.setattr(
         WorkflowRunService,
-        "record",
-        fail_workflow_run_persistence,
+        "transition",
+        fail_final_transition,
     )
 
     response = await client.post(
@@ -315,9 +334,10 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
 
     async with SessionLocal() as session:
         approvals = (
-            await session.scalars(select(Approval).where(Approval.user_id == user_id))
+            await session.scalars(
+                select(Approval).where(Approval.user_id == user_id)
+            )
         ).all()
-
         assert approvals == []
 
         audits = (
@@ -328,8 +348,8 @@ async def test_chat_rolls_back_refund_approval_when_workflow_run_persistence_fai
                 )
             )
         ).all()
-
         assert audits == []
+
 
 
 async def create_test_workflow_run(

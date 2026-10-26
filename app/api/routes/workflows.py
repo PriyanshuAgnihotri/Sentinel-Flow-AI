@@ -158,9 +158,7 @@ def _workflow_history_item(run: WorkflowRun) -> dict:
         "user_id": run.user_id,
         "conversation_id": run.conversation_id,
         "input_text": run.input_text,
-        "lifecycle_status": stored_result.get(
-            "lifecycle_status", "completed"
-        ),
+        "lifecycle_status": run.lifecycle_status,
         "confidence": run.confidence,
         "escalation_required": run.escalation_required,
         "created_at": run.created_at,
