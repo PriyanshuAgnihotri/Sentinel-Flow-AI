@@ -27,5 +27,36 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [x.strip() for x in self.frontend_origins.split(",") if x.strip()]
 
+    def validate_deployment_security(self) -> None:
+        """Reject insecure authentication configuration outside local development."""
+        if self.app_env.strip().lower() in {"local", "development", "test"}:
+            return
+
+        problems: list[str] = []
+
+        if len(self.auth_jwt_secret) < 32:
+            problems.append("AUTH_JWT_SECRET must be at least 32 characters")
+
+        if not self.auth_jwt_issuer.strip():
+            problems.append("AUTH_JWT_ISSUER must be configured")
+
+        if not self.auth_jwt_audience.strip():
+            problems.append("AUTH_JWT_AUDIENCE must be configured")
+
+        if len(self.approval_api_token) < 32:
+            problems.append("APPROVAL_API_TOKEN must be at least 32 characters")
+
+        if (
+            self.auth_jwt_secret
+            and self.approval_api_token
+            and self.auth_jwt_secret == self.approval_api_token
+        ):
+            problems.append("JWT secret and approval token must be different")
+
+        if problems:
+            raise ValueError(
+                "Insecure deployment configuration: " + "; ".join(problems)
+            )
+
 
 settings = Settings()
