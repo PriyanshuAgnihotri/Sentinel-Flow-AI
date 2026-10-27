@@ -69,8 +69,8 @@ pytest -q
 | GET | `/ready` | Dependency readiness/degraded state |
 | GET | `/metrics` | Metrics endpoint placeholder (wire real aggregation before production) |
 | POST | `/api/v1/chat` | Run support workflow |
-| POST | `/api/v1/approvals/{approval_id}/approve` | Approval contract; currently returns 501 until persistence/auth is implemented |
-| POST | `/api/v1/approvals/{approval_id}/reject` | Rejection contract; currently returns 501 until persistence/auth is implemented |
+| POST | `/api/v1/approvals/{approval_id}/approve` | Approves a pending approval using bearer-token authentication and persistent decision handling |
+| POST | `/api/v1/approvals/{approval_id}/reject` | Rejects a pending approval using bearer-token authentication and persistent decision handling |
 
 Example response fields: `answer`, `confidence`, `sources`, `actions_taken`, `blocked_actions`, `escalation_required`, `trace_id`, `request_id`, `cache_hit`.
 
@@ -82,8 +82,9 @@ Example response fields: `answer`, `confidence`, `sources`, `actions_taken`, `bl
 3. Deploy the repository as a Docker service. Set the Dockerfile path to `Dockerfile` if autodetection fails.
 4. Configure `DATABASE_URL` using Railway's PostgreSQL connection string, converted to SQLAlchemy async format (`postgresql+asyncpg://...`); set `REDIS_URL` from the Redis service.
 5. Add `OPENAI_API_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `FRONTEND_ORIGINS`, and cache settings as service variables. Never commit secrets.
-6. Configure the health check path `/health`; validate `/ready`, `/docs`, and a demo `/api/v1/chat` call.
-7. Run migrations/schema creation as a controlled release step. Do not rely on application startup to create production tables.
+6. Configure `AUTH_JWT_SECRET` and `APPROVAL_API_TOKEN` as separate, cryptographically random secrets, each at least 32 characters long. Set `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` to the expected values. The application validates these security settings at startup in staging/production and refuses to start if they are missing or insecure. Keep real secrets in the hosting provider's secret-variable settings, never in Git.
+7. Configure the health check path `/health`; validate `/ready`, `/docs`, and a demo `/api/v1/chat` call.
+8. Run migrations/schema creation as a controlled release step. Do not rely on application startup to create production tables.
 
 ### Vercel (optional frontend)
 A frontend is not included in this backend-first scaffold. Create a Next.js app, configure `NEXT_PUBLIC_API_BASE_URL` to the Railway URL, add the Vercel origin to `FRONTEND_ORIGINS`, deploy, and verify browser CORS. Never put server secrets in `NEXT_PUBLIC_*` variables.
@@ -99,7 +100,7 @@ Set the three Langfuse environment variables. The included helper attempts a wor
 - The included knowledge answer is a demo fixture, not a complete RAG pipeline. Add document ingestion, chunking, retrieval, source-level ACLs, and confidence calibration.
 - PostgreSQL models are defined, but writes, migrations, conversation persistence, and LangGraph checkpointer are not wired yet.
 - `/metrics` currently documents the intended schema but does not aggregate telemetry. Add Prometheus/OpenTelemetry metrics and load-test the service.
-- Approval endpoints deliberately return 501 until identity, role authorization, durable decisions, and audited execution are implemented.
+- Approval endpoints require a configured bearer token and persist approval decisions. Full identity integration, role-based authorization, and comprehensive audited execution remain areas for further hardening.
 
 ## Evaluation
 

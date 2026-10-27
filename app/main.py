@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_deployment_security()
     redis = None
     try:
         redis = Redis.from_url(
