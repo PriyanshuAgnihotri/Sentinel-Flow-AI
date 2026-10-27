@@ -3,10 +3,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from sqlalchemy import text
 
 from app.api.routes.workflows import router
 from app.core.config import settings
+from app.db.session import engine
 from app.services.cache import SemanticCache
 
 logger = logging.getLogger(__name__)
@@ -63,23 +66,37 @@ def health():
     return {"status": "healthy", "service": "sentinel-flow"}
 
 
+async def database_is_available() -> bool:
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        logger.warning("Database readiness check failed", exc_info=True)
+        return False
+
+
 @app.get("/ready")
 async def ready():
+    database_ok = await database_is_available()
     redis_ok = False
-    redis = getattr(app.state, "redis", None)
 
+    redis = getattr(app.state, "redis", None)
     if redis:
         try:
             redis_ok = bool(await redis.ping())
         except Exception:
             logger.warning("Redis readiness check failed", exc_info=True)
 
-    # Redis is optional for the local demo; report its status explicitly.
-    return {
-        "status": "ready" if redis_ok else "degraded",
+    # PostgreSQL is required; Redis remains optional for the local demo.
+    payload = {
+        "status": "ready" if database_ok else "not_ready",
+        "database": database_ok,
         "redis": redis_ok,
-        "cache_enabled": getattr(app.state, "cache", None) is not None,
+        "cache_enabled": getattr(app.state, "cache", None) is not None
+        and redis_ok,
     }
+    return payload if database_ok else JSONResponse(status_code=503, content=payload)
 
 
 @app.get("/metrics")
