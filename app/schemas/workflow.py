@@ -84,3 +84,21 @@ class WorkflowHistoryPage(BaseModel):
 
 class WorkflowHistoryDetail(WorkflowHistoryItem):
     result: dict[str, Any]
+
+
+
+class StaleWorkflowItem(BaseModel):
+    id: str
+    request_id: str
+    user_id: str
+    lifecycle_status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class StaleWorkflowPage(BaseModel):
+    items: list[StaleWorkflowItem]
+    limit: int
+    offset: int
+    total: int
+    stale_after_minutes: int
