@@ -7,10 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.db.session import get_session
-from app.models.tables import WorkflowRun
+from app.models.tables import User, WorkflowRun
 from app.schemas.workflow import (
     ApprovalDecision,
     ChatRequest,
+    StaleWorkflowItem,
+    StaleWorkflowPage,
     WorkflowHistoryDetail,
     WorkflowHistoryPage,
     WorkflowResponse,
@@ -21,6 +23,7 @@ from app.services.approval_service import (
     ApprovalService,
 )
 from app.services.orchestrator import ApprovalPersistenceError, Orchestrator
+from app.services.stale_workflow_service import StaleWorkflowService
 from app.services.workflow_run_service import WorkflowRunPersistenceError
 
 router = APIRouter()
@@ -219,3 +222,44 @@ async def get_workflow_history_detail(
         raise HTTPException(status_code=404, detail="Workflow run not found.")
 
     return _workflow_history_item(run)
+
+
+@router.get("/admin/workflows/stale", response_model=StaleWorkflowPage)
+async def list_stale_workflows(
+    stale_after_minutes: int = Query(default=15, ge=1, le=10080),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: str = Depends(get_current_user),
+    session: AsyncSession = session_dependency,
+):
+    """List stale pending/running workflows for administrators; read-only."""
+    user = await session.get(User, current_user)
+    if user is None or user.role.lower() != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required.",
+        )
+
+    total, runs = await StaleWorkflowService.find_stale_page(
+        session,
+        stale_after_minutes=stale_after_minutes,
+        limit=limit,
+        offset=offset,
+    )
+    return StaleWorkflowPage(
+        items=[
+            StaleWorkflowItem(
+                id=run.id,
+                request_id=run.request_id,
+                user_id=run.user_id,
+                lifecycle_status=run.lifecycle_status,
+                created_at=run.created_at,
+                updated_at=run.updated_at,
+            )
+            for run in runs
+        ],
+        limit=limit,
+        offset=offset,
+        total=total,
+        stale_after_minutes=stale_after_minutes,
+    )

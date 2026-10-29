@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.main import app
-from app.models.tables import Approval, AuditLog, WorkflowRun
+from app.models.tables import Approval, AuditLog, User, WorkflowRun
 from app.services.approval_service import ApprovalService
 from app.services.orchestrator import ApprovalPersistenceError
 from app.services.workflow_lifecycle import WorkflowLifecycle
@@ -503,3 +503,96 @@ async def test_workflow_history_rejects_invalid_jwt(client):
         headers={"Authorization": "Bearer not-a-valid-jwt"},
     )
     assert response.status_code == 401
+
+
+
+async def test_admin_stale_workflows_requires_authentication(client):
+    response = await client.get("/api/v1/admin/workflows/stale")
+    assert response.status_code == 401
+
+
+async def test_admin_stale_workflows_denies_customer(client):
+    user_id = f"stale-customer-{uuid.uuid4()}"
+    async with SessionLocal() as session:
+        session.add(User(id=user_id, role="customer"))
+        await session.commit()
+
+    try:
+        response = await client.get(
+            "/api/v1/admin/workflows/stale",
+            headers={"Authorization": f"Bearer {create_history_token(user_id)}"},
+        )
+        assert response.status_code == 403
+    finally:
+        async with SessionLocal() as session:
+            user = await session.get(User, user_id)
+            if user is not None:
+                await session.delete(user)
+                await session.commit()
+
+
+async def test_admin_stale_workflows_lists_metadata_with_pagination(client):
+    admin_id = f"stale-admin-{uuid.uuid4()}"
+    other_user_id = f"stale-owner-{uuid.uuid4()}"
+    run_ids = []
+    now = datetime.now(UTC)
+
+    async with SessionLocal() as session:
+        session.add(User(id=admin_id, role="admin"))
+        await session.commit()
+
+    try:
+        for index in range(2):
+            run_id = str(uuid.uuid4())
+            run_ids.append(run_id)
+            async with SessionLocal() as session:
+                session.add(
+                    WorkflowRun(
+                        id=run_id,
+                        request_id=str(uuid.uuid4()),
+                        user_id=other_user_id,
+                        input_text="private customer text",
+                        result_json={"private": "result payload"},
+                        confidence=0.9,
+                        escalation_required=False,
+                        lifecycle_status="running",
+                        created_at=now - timedelta(hours=1),
+                        updated_at=now - timedelta(hours=1),
+                    )
+                )
+                await session.commit()
+
+        headers = {
+            "Authorization": f"Bearer {create_history_token(admin_id)}"
+        }
+        response = await client.get(
+            "/api/v1/admin/workflows/stale",
+            params={"stale_after_minutes": 15, "limit": 1, "offset": 0},
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] >= 2
+        assert len(body["items"]) == 1
+        assert body["limit"] == 1
+        assert body["offset"] == 0
+        assert body["items"][0]["lifecycle_status"] == "running"
+        assert "input_text" not in body["items"][0]
+        assert "result_json" not in body["items"][0]
+        assert "private customer text" not in response.text
+        assert "result payload" not in response.text
+
+        invalid = await client.get(
+            "/api/v1/admin/workflows/stale",
+            params={"stale_after_minutes": 0},
+            headers=headers,
+        )
+        assert invalid.status_code == 422
+    finally:
+        await cleanup_workflow_runs(*run_ids)
+        async with SessionLocal() as session:
+            admin = await session.get(User, admin_id)
+            if admin is not None:
+                await session.delete(admin)
+                await session.commit()
