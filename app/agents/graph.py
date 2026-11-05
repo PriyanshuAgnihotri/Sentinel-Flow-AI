@@ -41,7 +41,7 @@ def input_guardrail(s: FlowState) -> FlowState:
                     {
                         "type": result.category,
                         "reason": result.reason,
-                        "policy_rule": result.policy_rule,
+                        "policy_rule": result.rule_id,
                     }
                 ],
                 "escalation_required": False,
