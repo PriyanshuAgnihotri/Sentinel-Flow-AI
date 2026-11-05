@@ -11,6 +11,7 @@ from app.api.routes.workflows import router
 from app.core.config import settings
 from app.db.session import engine
 from app.services.cache import SemanticCache
+from app.services.observability import workflow_metrics_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +103,4 @@ async def ready():
 
 @app.get("/metrics")
 def metrics():
-    # Replace placeholder metrics with Prometheus/OpenTelemetry before production.
-    return {
-        "requests_total": 0,
-        "cache_hits": 0,
-        "cache_hit_rate": 0.0,
-        "average_latency_ms": None,
-        "p95_latency_ms": None,
-        "estimated_cost_saved_usd": 0.0,
-        "tool_call_success_rate": None,
-        "pending_approvals": None,
-        "note": (
-            "Metrics backend not yet wired; instrument with Prometheus/OpenTelemetry in deployment."
-        ),
-    }
+    return workflow_metrics_snapshot()
