@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,11 @@ from app.core.guardrails import inspect_input
 from app.schemas.workflow import Intent
 from app.services.approval_service import ApprovalService
 from app.services.cache import SemanticCache
-from app.services.observability import observe, trace_ids
+from app.services.observability import (
+    observe,
+    record_workflow_metric,
+    trace_ids,
+)
 from app.services.workflow_lifecycle import WorkflowLifecycle
 from app.services.workflow_run_service import (
     WorkflowRunPersistenceError,
@@ -51,6 +56,10 @@ class Orchestrator:
         conversation_id: str | None = None,
     ) -> dict:
         request_id, trace_id = trace_ids()
+        started_at = time.perf_counter()
+        metric_outcome = "failed"
+        metric_cache_hit = False
+
         span = observe(
             "sentinelflow.workflow",
             request_id,
@@ -101,6 +110,7 @@ class Orchestrator:
                     result=result,
                 )
                 self._finish_span(span, state, result)
+                metric_outcome = WorkflowRunService.determine_status(result)
                 return result
 
             # Exact-match cache lookup is scoped to the requesting user.
@@ -120,6 +130,8 @@ class Orchestrator:
                         result=hit,
                     )
                     self._finish_cached_span(span, hit)
+                    metric_cache_hit = True
+                    metric_outcome = WorkflowRunService.determine_status(hit)
                     return hit
 
             state = workflow_graph.invoke(
@@ -183,6 +195,7 @@ class Orchestrator:
                 await self.cache.store(message, user_id, result)
 
             self._finish_span(span, state, result)
+            metric_outcome = WorkflowRunService.determine_status(result)
             return result
 
         except (ApprovalPersistenceError, WorkflowRunPersistenceError):
@@ -228,6 +241,12 @@ class Orchestrator:
             )
             self._end_error_span(span)
             return fallback
+        finally:
+            record_workflow_metric(
+                outcome=metric_outcome,
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                cache_hit=metric_cache_hit,
+            )
 
 
     @staticmethod
