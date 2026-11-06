@@ -1,9 +1,12 @@
+import hmac
 import logging
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.asyncio import Redis
 from sqlalchemy import text
 
@@ -14,6 +17,37 @@ from app.services.cache import SemanticCache
 from app.services.observability import workflow_metrics_snapshot
 
 logger = logging.getLogger(__name__)
+metrics_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_metrics_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(metrics_bearer_scheme),
+    ],
+) -> None:
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Bearer token required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not settings.metrics_api_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics authentication is not configured.",
+        )
+
+    if not hmac.compare_digest(
+        credentials.credentials,
+        settings.metrics_api_token,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid metrics bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 @asynccontextmanager
@@ -95,12 +129,13 @@ async def ready():
         "status": "ready" if database_ok else "not_ready",
         "database": database_ok,
         "redis": redis_ok,
-        "cache_enabled": getattr(app.state, "cache", None) is not None
-        and redis_ok,
+        "cache_enabled": getattr(app.state, "cache", None) is not None and redis_ok,
     }
     return payload if database_ok else JSONResponse(status_code=503, content=payload)
 
 
 @app.get("/metrics")
-def metrics():
+def metrics(
+    _: None = Depends(require_metrics_token),
+):
     return workflow_metrics_snapshot()

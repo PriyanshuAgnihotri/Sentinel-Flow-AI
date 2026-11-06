@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     semantic_cache_ttl_seconds: int = 3600
     max_graph_steps: int = 8
     approval_api_token: str = ""
+    metrics_api_token: str = ""
     auth_jwt_secret: str = ""
     auth_jwt_issuer: str = ""
     auth_jwt_audience: str = ""
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
         if len(self.approval_api_token) < 32:
             problems.append("APPROVAL_API_TOKEN must be at least 32 characters")
 
+        if len(self.metrics_api_token) < 32:
+            problems.append("METRICS_API_TOKEN must be at least 32 characters")
+
         if (
             self.auth_jwt_secret
             and self.approval_api_token
@@ -53,10 +57,14 @@ class Settings(BaseSettings):
         ):
             problems.append("JWT secret and approval token must be different")
 
+        if self.metrics_api_token and (
+            self.metrics_api_token == self.auth_jwt_secret
+            or self.metrics_api_token == self.approval_api_token
+        ):
+            problems.append("Metrics API token must be different from JWT and approval tokens")
+
         if problems:
-            raise ValueError(
-                "Insecure deployment configuration: " + "; ".join(problems)
-            )
+            raise ValueError("Insecure deployment configuration: " + "; ".join(problems))
 
 
 settings = Settings()

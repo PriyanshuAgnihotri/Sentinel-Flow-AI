@@ -10,6 +10,7 @@ def secure_settings(**overrides) -> Settings:
         "auth_jwt_issuer": "sentinelflow-staging",
         "auth_jwt_audience": "sentinelflow-api",
         "approval_api_token": "a" * 40,
+        "metrics_api_token": "m" * 40,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -37,11 +38,11 @@ def test_valid_staging_security_configuration_passes():
         ("auth_jwt_audience", "", "AUTH_JWT_AUDIENCE"),
         ("approval_api_token", "", "APPROVAL_API_TOKEN"),
         ("approval_api_token", "short", "APPROVAL_API_TOKEN"),
+        ("metrics_api_token", "", "METRICS_API_TOKEN"),
+        ("metrics_api_token", "short", "METRICS_API_TOKEN"),
     ],
 )
-def test_staging_rejects_missing_or_weak_security_settings(
-    setting, value, message
-):
+def test_staging_rejects_missing_or_weak_security_settings(setting, value, message):
     with pytest.raises(ValueError, match=message):
         secure_settings(**{setting: value}).validate_deployment_security()
 
@@ -50,6 +51,18 @@ def test_staging_rejects_reused_jwt_and_approval_secrets():
     with pytest.raises(ValueError, match="must be different"):
         secure_settings(
             approval_api_token="j" * 40,
+        ).validate_deployment_security()
+
+
+def test_staging_rejects_reused_metrics_secret():
+    with pytest.raises(ValueError, match="Metrics API token must be different"):
+        secure_settings(
+            metrics_api_token="j" * 40,
+        ).validate_deployment_security()
+
+    with pytest.raises(ValueError, match="Metrics API token must be different"):
+        secure_settings(
+            metrics_api_token="a" * 40,
         ).validate_deployment_security()
 
 
@@ -72,6 +85,7 @@ async def test_staging_startup_fails_when_security_secrets_are_missing(monkeypat
     monkeypatch.setattr(app_settings, "auth_jwt_issuer", "")
     monkeypatch.setattr(app_settings, "auth_jwt_audience", "")
     monkeypatch.setattr(app_settings, "approval_api_token", "")
+    monkeypatch.setattr(app_settings, "metrics_api_token", "")
 
     with pytest.raises(ValueError, match="Insecure deployment configuration"):
         async with lifespan(app):
